@@ -2,7 +2,8 @@
 raw/
 *.zip
 intermediate_csv/
-windows/
+windows/**
+!windows/index.csv
 # Derived artifacts
 *.npy
 *.npz
