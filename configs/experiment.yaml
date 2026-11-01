@@ -1,0 +1,35 @@
+# CS60055 Challenge 2 - pipeline configuration.
+# Everything under `preprocessing` is hashed into each window's provenance record.
+
+paths:
+  room_A_raw: raw/experiment2/realdata/input_data/30ms/csidata
+  room_B_raw: raw/experiment3/Data
+  intermediate_csv: intermediate_csv
+  windows: windows
+  splits: splits
+  results: results
+
+splits:
+  room_B_validation_per_class: 25
+  room_B_seed: 42            # lexicographic filename sort per class, then numpy default_rng(42)
+
+preprocessing:
+  nexmon:
+    udp_port: 5500
+    magic: 0x1111
+    header_bytes: 18
+    n_subcarriers: 256
+  qc:
+    # An observation is "full-band" if each of the four 20 MHz sub-bands (64 subcarriers)
+    # holds at least this share of the total CSI energy. Rejects 20 MHz frames whose
+    # upper 192 subcarriers are only noise floor.
+    min_subband_energy_share: 0.005
+    # Captures with fewer valid observations than this cannot form a window and are excluded.
+    min_valid_obs: 10
+  window:
+    length: 150              # official model input (150, 256)
+    # Each capture's valid observation sequence is resampled to `length` steps with a
+    # polyphase filter (anti-aliased when downsampling). Same rule for both rooms.
+    resample_padtype: line
+
+seed: 42

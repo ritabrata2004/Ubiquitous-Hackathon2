@@ -1,0 +1,14 @@
+# Dataset and archives (never commit; archives also contain disallowed source-author code)
+raw/
+*.zip
+intermediate_csv/
+windows/
+# Derived artifacts
+*.npy
+*.npz
+*.pt
+__pycache__/
+.venv/
+.pytest_cache/
+# Course handout (not our work)
+CS60055_Challenge2.pdf

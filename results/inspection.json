@@ -1,0 +1,50 @@
+{
+  "room_A": {
+    "captures": 1084,
+    "packets_per_capture": [
+      112.0,
+      221.0,
+      251.0
+    ],
+    "duration_s_median": 3.9242119789123535,
+    "udp_payload_lengths": {
+      "1042": 234019,
+      "726": 2
+    },
+    "chanspec": [
+      57386
+    ],
+    "chip_version": [
+      106
+    ],
+    "non_monotonic_timestamp_captures": 2,
+    "seq_65535_fraction": 0.506021959651257,
+    "full_band_fraction": 0.292036116725565,
+    "full_band_obs_per_capture_pct_0_5_50_95_100": [
+      0.0,
+      31.0,
+      59.0,
+      111.0,
+      126.0
+    ]
+  },
+  "room_B": {
+    "captures": 1201,
+    "rows_per_capture": [
+      500
+    ],
+    "header_variants": {
+      "0": 5,
+      "Subcarrier_1": 1196
+    },
+    "integer_valued": true,
+    "full_band_fraction": 0.9420432972522897,
+    "full_band_obs_per_capture_pct_0_5_50_95_100": [
+      339.0,
+      390.0,
+      499.0,
+      500.0,
+      500.0
+    ]
+  }
+}

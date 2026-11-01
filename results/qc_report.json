@@ -1,0 +1,100 @@
+{
+  "config_hash": "2ace72851e94",
+  "A/development": {
+    "captures": 934,
+    "eligible": 927,
+    "excluded": [
+      "A_sit_sit117",
+      "A_sit_sit126",
+      "A_sit_sit5",
+      "A_stand_stand127",
+      "A_stand_stand135",
+      "A_stand_stand55",
+      "A_stand_stand56"
+    ],
+    "observations": 201369,
+    "valid_observations": 58818,
+    "valid_per_capture_median": 59.0,
+    "rejected": {
+      "rej_nonfinite": 0,
+      "rej_all_zero": 0,
+      "rej_duplicate": 0,
+      "rej_partial_band": 142551
+    },
+    "per_label": {
+      "fall": 177,
+      "sit": 175,
+      "sitdown": 155,
+      "stand": 111,
+      "standup": 155,
+      "walk": 154
+    }
+  },
+  "A/validation": {
+    "captures": 150,
+    "eligible": 148,
+    "excluded": [
+      "A_validation_sit_sit201",
+      "A_validation_stand_stand137"
+    ],
+    "observations": 32650,
+    "valid_observations": 9524,
+    "valid_per_capture_median": 59.0,
+    "rejected": {
+      "rej_nonfinite": 0,
+      "rej_all_zero": 0,
+      "rej_duplicate": 0,
+      "rej_partial_band": 23126
+    },
+    "per_label": {
+      "fall": 25,
+      "sit": 24,
+      "sitdown": 25,
+      "stand": 24,
+      "standup": 25,
+      "walk": 25
+    }
+  },
+  "B/development": {
+    "captures": 1076,
+    "eligible": 1076,
+    "excluded": [],
+    "observations": 538000,
+    "valid_observations": 507418,
+    "valid_per_capture_median": 500.0,
+    "rejected": {
+      "rej_nonfinite": 0,
+      "rej_all_zero": 0,
+      "rej_duplicate": 0,
+      "rej_partial_band": 30582
+    },
+    "per_label": {
+      "empty": 242,
+      "lying": 326,
+      "sit": 128,
+      "stand": 196,
+      "walk": 184
+    }
+  },
+  "B/validation": {
+    "captures": 125,
+    "eligible": 125,
+    "excluded": [],
+    "observations": 62500,
+    "valid_observations": 58279,
+    "valid_per_capture_median": 496.0,
+    "rejected": {
+      "rej_nonfinite": 0,
+      "rej_all_zero": 0,
+      "rej_duplicate": 0,
+      "rej_partial_band": 4221
+    },
+    "per_label": {
+      "empty": 25,
+      "lying": 25,
+      "sit": 25,
+      "stand": 25,
+      "walk": 25
+    }
+  }
+}
