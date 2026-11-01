@@ -332,17 +332,49 @@ Fig. `task3_confusion_K5.png`):
 | B | empty | 0.588 | 0.400 | 0.476 |
 | B | lying | 0.647 | 0.440 | 0.524 |
 
-**Why SIT and STAND do not transfer.** The confusion matrices show SIT and STAND are not
-just confused but systematically *swapped* between rooms, while WALK transfers in A → B
-(F1 0.60). Within a room these classes are easy (Task-2 per-room probes reach 0.93–0.98), and
-a model that sees only the static multipath profile (per-subcarrier temporal mean) transfers
-*worse* than chance on them (shared F1 0.06–0.31 in a 5-episode check), while motion
-statistics transfer better. Static postures are encoded mainly as a change of the room's own
-multipath pattern, which depends on where in the room and in what geometry the person sits or
-stands (limitation 2); it carries no room-independent meaning. Per-room standardization aligns
-the room-level offset but cannot align posture-specific directions in feature space without
-target labels for those postures. Dynamic activities (WALK, FALL, transitions) are more
-transferable.
+**Diagnosis: two different failure modes.** Pooling the shared-class errors of the primary
+configuration over the 10 episodes (no new model selection) shows that the two directions fail
+differently:
+
+| | B→A K=5 | B→A K=20 | A→B K=5 | A→B K=20 |
+|---|---|---|---|---|
+| shared-class errors predicted as a target-**exclusive** class | 61% | **87%** | 12% | 17% |
+| shared-class errors that are **SIT ↔ STAND** | 19% | 7% | **63%** | **55%** |
+| recall SIT / STAND / WALK | 0.02 / 0.38 / 0.16 | 0.00 / 0.19 / 0.04 | 0.45 / 0.11 / 0.67 | 0.71 / 0.11 / 0.63 |
+
+* **Target A — exclusive classes absorb the shared ones.** True SIT is predicted SITDOWN
+  (55%) and true WALK is predicted SITDOWN (66%) at K = 20, and it worsens as K grows.
+* **Target B — STAND collapses into SIT.** True STAND is predicted SIT 60% of the time, while
+  SIT itself reaches 0.71 recall at K = 20; WALK transfers (0.63).
+
+**Mechanism: label shift in the per-room alignment.** After per-room standardization the room
+is no longer linearly predictable from all development windows (5-fold accuracy 0.36), but it
+*is* predictable from the shared-class windows alone (0.984). Each room's mean is taken over a
+different activity mix (falls and transitions in A, empty and lying in B), so subtracting it
+shifts the shared classes to different places in the two rooms. In the head, all shared-class
+training windows come from the source room and all exclusive ones from the target room, so
+the residual room offset is learned as evidence for the exclusive classes. Within a room the
+shared classes are easy (Task-2 per-room probes 0.93–0.98), and a model that sees only the
+static multipath profile transfers SIT/STAND/WALK at or below chance (shared F1 0.06–0.31 in a
+5-episode check), so static postures are encoded mainly as a room-specific change of the
+multipath pattern (cf. limitation 2).
+
+**Targeted fixes (all negative).** Chosen from the diagnosis before running, not tuned on
+validation; same 10 episodes (`scripts/task3_improvements.py`, `results/task3_improvements.csv`):
+
+| variant | B→A K=5 | B→A K=20 | A→B K=5 | A→B K=20 | effect on the diagnosed failure |
+|---|---|---|---|---|---|
+| primary (ssl / logreg) | 0.397 | 0.392 | 0.462 | 0.616 | shortcut 0.80 (A, K=20); SIT↔STAND 0.43 (B, K=20) |
+| + 4 crops per support capture | 0.395 | 0.395 | 0.459 | 0.616 | none: crops embed almost identically under global pooling |
+| + INLP on room (Ravfogel et al., 2020) | 0.397 | 0.392 | 0.462 | 0.616 | no-op: 0 directions removed (room not linearly predictable after alignment) |
+| + INLP on head groups (source vs support) | 0.397 | 0.392 | 0.438 | 0.508 | harmful: the groups coincide with shared vs exclusive activities |
+| + self-training (p ≥ 0.9, 3 rounds) | 0.367 | 0.367 | 0.452 | 0.600 | harmful: shortcut 0.87 (A); SIT↔STAND 0.52 (B) |
+
+Self-training confirms the model's own errors, and distribution-matching alignment cannot
+correct a class-dependent offset it cannot see without target shared labels. Fixing these
+failure modes would need label-shift-aware alignment (estimating the target class mix) or a
+source-supervised, domain-adversarial encoder (Ganin et al., 2016); we leave both as future
+work. Dynamic activities (WALK, FALL, transitions) remain the most transferable.
 
 ## 8. End-to-End System
 
@@ -392,3 +424,6 @@ assistant. **[TEAM: adjust to the course's disclosure rules.]**
 4. Chen, T.; Kornblith, S.; Norouzi, M.; Hinton, G. "A Simple Framework for Contrastive Learning
    of Visual Representations." ICML 2020.
 5. Snell, J.; Swersky, K.; Zemel, R. "Prototypical Networks for Few-shot Learning." NeurIPS 2017.
+6. Ravfogel, S.; Elazar, Y.; Gonen, H.; Twiton, M.; Goldberg, Y. "Null It Out: Guarding Protected
+   Attributes by Iterative Nullspace Projection." ACL 2020.
+7. Ganin, Y. et al. "Domain-Adversarial Training of Neural Networks." JMLR 17, 2016.

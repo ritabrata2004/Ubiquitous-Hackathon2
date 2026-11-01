@@ -37,9 +37,11 @@ observations instead of failing.
 6. **Task 3.** Primary: SSL + logistic regression, routed. Macro-F1 at K=1/5/10/20:
    B→A 0.25/0.40/0.39/0.39, A→B 0.30/0.46/0.54/0.62. Exclusive activities are learned well
    from K shots (0.68 and 0.86 at K=20).
-   Shared SIT/STAND transfer poorly and are *swapped* across rooms (confusion matrix): posture
-   is encoded in the room-specific static profile. Per-room alignment and routing are what make
-   shared transfer possible at all (ablation figure).
+   Shared classes fail in two ways: in target A the exclusive classes absorb them (87% of
+   shared errors at K=20); in target B STAND collapses into SIT. Cause: per-room alignment
+   subtracts means over different activity mixes (label shift); room stays 98% predictable
+   from shared windows. INLP, self-training and support crops did not help (negative results).
+   Per-room alignment and routing still give +0.04 to +0.32 macro-F1 (ablation figure).
 7. **Honest limitations.** Room = session confound; Room-A windows are upsampled; two Room-A
    validation captures unusable (148/150); capture-disjoint, not subject-disjoint.
 

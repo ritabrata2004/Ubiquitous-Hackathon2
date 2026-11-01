@@ -72,6 +72,7 @@ python scripts/task1_room.py              # room identification + window-length 
 python scripts/task2_ssl.py               # SimCLR encoder, linear probes, UMAP (~13 min)
 python scripts/task3_fewshot.py           # few-shot A<->B, K=1/5/10/20, ablations (~1.5 h, CPU)
 python scripts/task3_fewshot.py --plot-only   # redraw Task-3 figures from saved episodes
+python scripts/task3_improvements.py      # targeted fixes for the diagnosed failure modes (~10 min)
 python run_episode.py EPISODE_DIR --out predictions.csv   # window_id, room, label, confidence
 ```
 
