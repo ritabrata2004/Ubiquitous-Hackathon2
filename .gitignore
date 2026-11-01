@@ -13,3 +13,5 @@ __pycache__/
 .pytest_cache/
 # Course handout (not our work)
 CS60055_Challenge2.pdf
+episodes/
+predictions.csv

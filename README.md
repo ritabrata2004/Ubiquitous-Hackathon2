@@ -7,9 +7,13 @@ activity recognition.
 ## Setup
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv ~/.venvs/ubi2 && source ~/.venvs/ubi2/bin/activate
+pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu   # CPU build
 pip install -r requirements.txt
 ```
+
+Use a fresh venv: scikit-learn imports pandas if present, and an old pandas built against
+numpy 1.x crashes under numpy 2.x. pandas is not needed by this project.
 
 Place the dataset (never committed) as:
 

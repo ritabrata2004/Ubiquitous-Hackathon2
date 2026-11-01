@@ -1,0 +1,270 @@
+# Cross-Room Few-Shot Adaptation for WiFi CSI Activity Recognition
+
+CS60055 Ubiquitous Computing — Hackathon Challenge 2 — Technical Report (draft)
+
+Repository: https://github.com/ritabrata2004/Ubiquitous-Hackathon2
+
+> Status: sections 1–5 and the method parts of 6–8 are written; result tables marked
+> **[RESULT]** are filled from `results/*.csv` once the final runs complete.
+
+---
+
+## 1. Introduction
+
+A WiFi sensing model trained in one indoor environment carries that environment's multipath
+signature into its representation. We build a complete Python pipeline that (i) reconstructs a
+common CSI amplitude representation from two very differently packaged recordings — raw Nexmon
+PCAPs (Room A, Experiment 2) and amplitude CSVs (Room B, Experiment 3) — (ii) identifies which
+recorded environment a window came from, (iii) learns a representation from unlabeled
+recordings of both rooms, and (iv) recognizes activities in a target room using only K labeled
+captures per target-exclusive activity, transferring SIT, STAND and WALK from the source room.
+
+All results are **validation results** on the fixed challenge validation sets, not unseen-test
+accuracy.
+
+## 2. Data and Inspection
+
+| | Room A (Experiment 2) | Room B (Experiment 3) |
+|---|---|---|
+| Format | raw `.pcap`, Nexmon UDP/5500 | amplitude `.csv`, 256 integer columns |
+| Captures (dev + val) | 934 + 150 (supplied `validation/`) | 1,076 + 125 (created, seed 42) |
+| Activities | fall, sit, sitdown, stand, standup, walk | empty, lying, sit, stand, walk |
+| Observations / capture | 112–251 packets (median 221), ≈ 3.9 s | exactly 500 rows |
+| Timestamps | yes (PCAP record time) | none |
+
+Findings from `scripts/inspect_data.py` (`results/inspection.json`):
+
+* **Packet structure.** All CSI datagrams are UDP/5500 with an 18-byte Nexmon header (magic
+  `0x1111`, RSSI, frame control, source MAC, sequence number, core/stream, chanspec, chip
+  version) followed by 256 × 4-byte CSI words. One chanspec (`0xe02a`, 80 MHz) and one chip
+  version (`0x6a`); all packets are core 0 / stream 0. Two packets (of 234,021) are truncated
+  (726 bytes) and rejected.
+* **20 MHz frames inside the 80 MHz layout.** For ~71% of Room-A observations, only the primary
+  20 MHz sub-band (64 subcarriers) carries energy; the remaining 192 subcarriers sit at the
+  noise floor (exponent ≈ −16). These are frames transmitted at 20 MHz and reported in the
+  80 MHz layout. The minimum sub-band energy share is sharply bimodal
+  (Fig. `subband_energy_share.png`), so frame bandwidth — not the sequence-number field — is
+  the right validity criterion. Room B shows the same phenomenon for ~6% of rows.
+* **Consequence.** A Room-A capture holds a median of **59 full-band observations**
+  (5th–95th percentile 31–111); **no** capture reaches 150. Room B holds a median of 499.
+* **Ordering.** Room B is already in frequency order (DC null at the centre). Two Room-A
+  captures show small timestamp reversals (< 70 ms); we keep PCAP record order.
+* **Schema variants.** Five Room-B files use header `0..255` instead of `Subcarrier_1..256`;
+  four files lack `_Amp_` in the name. Neither affects content.
+
+## 3. Preprocessing Pipeline
+
+```mermaid
+flowchart LR
+  A[Room A .pcap] --> P[pcap_reader: UDP/5500, Nexmon header, length/magic checks]
+  P --> D[csi_decode: 4366c0 block-float -> complex -> fftshift]
+  D --> M[amplitude]
+  B[Room B .csv] --> R[CSV reader: 256 numeric columns]
+  M --> C[(intermediate CSV: subcarrier_001..256, one row per observation)]
+  R --> C
+  C --> Q[cleaning: non-finite, all-zero, duplicate, partial-band]
+  Q --> W[windowing: resample valid sequence to 150 + 5 Hz low-pass]
+  W --> N[normalization: median gain, log, dev-fitted per-subcarrier z-score]
+  N --> X[(window 150 x 256 float32 + provenance index)]
+```
+
+Each stage is a small module in `src/`; `scripts/build_dataset.py` runs the whole chain and
+`run_episode.py` calls the same per-capture functions (`src/pipeline.py`). A test checks that
+both paths produce identical windows.
+
+### 3.1 CSI decoding (Room A)
+
+The BCM4366c0 reports each subcarrier as one 32-bit block-floating-point word: sign and 11-bit
+magnitude for the real part (bits 29, 28–18), the same for the imaginary part (bits 17, 16–6)
+and a shared 6-bit two's-complement exponent (bits 5–0); H = (±re + j·±im)·2^exp. We keep the
+exponent exactly rather than rescaling per packet, so amplitudes share one scale within a
+capture. Words arrive in FFT order; `fftshift` gives frequency order, matching Room B. A
+round-trip unit test packs random values into the documented layout and checks the decoder.
+Sanity: decoded spectra are smooth (adjacent-subcarrier log-amplitude correlation 0.996) with
+a DC null at index 128 and guard bands at the edges.
+
+### 3.2 Common intermediate form
+
+One CSV per capture with 256 amplitude columns `subcarrier_001…256` and one row per decoded
+observation in temporal order (`src/intermediate.py`). From here on, the pipeline does not know
+whether the source was PCAP or CSV.
+
+### 3.3 Quality control
+
+`src/cleaning.py` rejects, per observation and in this order: non-finite values, all-zero rows,
+exact duplicates within a capture, and **partial-band** rows whose smallest 20 MHz sub-band
+holds < 0.5% of the CSI energy. The threshold sits in the empty valley between the two modes of
+the sub-band-share distribution, so the outcome is insensitive to its exact value. Captures with
+fewer than 10 valid observations cannot form a window and are excluded:
+
+| | dev captures | dev excluded | val captures | val excluded |
+|---|---|---|---|---|
+| Room A | 934 | 7 (sit ×3, stand ×4) | 150 | 2 (`sit201`, `stand137`) |
+| Room B | 1,076 | 0 | 125 | 0 |
+
+No non-finite, all-zero or duplicate observations were found; all rejections are partial-band
+(`results/qc_report.json`). We did not apply wavelet or other denoising: the low-pass in §3.4
+already removes high-frequency fluctuation, and nothing in the task requires more.
+
+### 3.4 Windowing
+
+The official input is a (150, 256) window. Because no Room-A capture has 150 valid
+observations, we form **one window per capture** by resampling the capture's whole valid
+sequence to 150 steps with a polyphase FIR filter (`scipy.signal.resample_poly`, anti-aliased
+when downsampling). The same rule is applied to both rooms (Room A ≈ 59 → 150, Room B ≈ 480 →
+150). Alternatives we rejected:
+
+* *Edge-padding Room A to 150* — every Room-A window would end in a constant tail, a trivial
+  room cue.
+* *Keeping the 20 MHz frames* — rows would alternate between full-band and ¾-empty spectra.
+
+**Bandwidth equalization.** Resampling leaves Room-A windows with no content above
+≈ n_valid/2 cycles per window, while Room-B windows are full-band. A room classifier using
+*only* the subcarrier-averaged temporal power spectrum reached 100% on the shared
+SIT/STAND/WALK classes, and within Room A the high-frequency share correlated with packet count
+(r = 0.84) — an indirect packet-count shortcut that the challenge forbids. A common zero-phase
+4th-order Butterworth low-pass at 20 cycles per window (≈ 5 Hz for a 4 s capture, above the
+dominant frequencies of these activities) reduces the dynamics-only room accuracy on shared
+classes to 75.7% and the packet-count correlation to 0.18; stronger filtering does not reduce
+it further, indicating the residual reflects genuine session differences. Windows never mix
+captures and the procedure is deterministic.
+
+### 3.5 Normalization
+
+`src/normalization.py`, applied to every window:
+
+1. divide by the window's median amplitude — the rooms report amplitude on unrelated scales
+   (decoded block-float vs integer export) and per-session gain is not activity information;
+2. `log(x + 1e-3)` — compresses multipath dynamic range;
+3. per-subcarrier z-score with mean/std fitted on **development windows only**.
+
+Steps 1–2 have no fitted parameters. Validation windows are transformed with the
+development statistics.
+
+### 3.6 Splits and provenance
+
+* Room A: the supplied `validation/` folder is the validation set; never moved to development.
+* Room B: per class, filenames sorted lexicographically, 25 drawn with
+  `numpy.random.default_rng(42)` (one generator, classes in sorted order); frozen in
+  `splits/room_B_validation.txt`.
+* The capture is the atomic unit; one capture = one window, so no capture can straddle splits
+  (tested).
+* `windows/index.csv` maps each `window_XXXX.npy` to split, room, label, capture id, source
+  path, source SHA-1, number of valid observations and the hash of the preprocessing config.
+  Window ids are a seeded permutation and carry no room/label/split information.
+
+## 4. Leakage Controls
+
+| Rule | How it is enforced |
+|---|---|
+| Capture-level isolation | one window per capture; test asserts no capture in both splits |
+| Validation only for evaluation | all fitted statistics (normalization, per-room feature stats), SSL pretraining, probes and heads use development windows only |
+| Target-label isolation (Task 3) | support drawn from target **development** captures of target-exclusive classes only; target SIT/STAND/WALK labels never used |
+| No metadata shortcuts | models see only the (150, 256) array; labels/rooms come from the index as targets only; bandwidth shortcut removed (§3.4) |
+| No query matching | neutral window ids; no lookup against known captures |
+| No source-author code | own decoder from the documented bit layout; the MATLAB folder and LSTM notebook were not extracted |
+
+## 5. Task 1 — Recorded-Environment Identification
+
+**Models** (`scripts/task1_room.py`), trained on development windows of both rooms:
+
+* `static_profile` — logistic regression on the per-subcarrier temporal mean (multipath profile);
+* `dynamics_only` — logistic regression on the subcarrier-averaged temporal power spectrum
+  (control with no spectral information);
+* `handcrafted` — per-subcarrier mean and std plus motion energy (513 features);
+* `cnn` — the shared encoder (§6) with a linear head, trained with random-length crops so that
+  one model serves all window lengths; 3 seeds. Saved and reused for routing in Task 3.
+
+**Window-length study:** validation windows are centre-cropped to L ∈ {10, 25, 50, 75, 100,
+150}; logistic models are refit on equally cropped development windows.
+
+**[RESULT]** accuracy table (L = 150) and Fig. `room_acc_vs_window_length.png`.
+
+## 6. Task 2 — Learning Without Labels
+
+**Encoder** (`src/models.py`): 1-D CNN over time with the 256 subcarriers as input channels —
+four Conv1d(k=5)+BatchNorm+GELU blocks (64, 64, 128, 128 channels; two stride-2), global
+average pooling over time → 128-d embedding. Global pooling makes it length-agnostic.
+
+**Pretraining** (`src/ssl.py`): SimCLR (NT-Xent, τ = 0.2) on development windows of both rooms
+with no activity or room labels; 60 epochs, batch 128, AdamW, cosine schedule. Augmentations
+model nuisances that should not change the activity: random temporal crop (75–150), per-
+subcarrier log-normal gain jitter (σ = 0.2), random subcarrier block masking (8–48), time
+masking (≤ 20%), Gaussian noise (σ = 0.1).
+
+**Evaluation:** frozen embeddings → standardization + logistic regression fitted on labeled
+development windows, scored on validation; compared with the same architecture with random
+weights and with the handcrafted features. Probe settings: joint (8 activities across both
+rooms), Room A only (6), Room B only (5). Metrics: macro-F1, balanced accuracy.
+
+**[RESULT]** probe table and Figs. `task2_embeddings_ssl.png`, `task2_embeddings_random.png`.
+
+## 7. Task 3 — Cross-Room Few-Label Adaptation
+
+For target T with source S, T's head is trained on S's development SIT/STAND/WALK windows plus
+K distinct T development captures per T-exclusive class (A: SITDOWN, STANDUP, FALL;
+B: EMPTY, LYING), and evaluated on **all** T validation windows over T's class space. Support is
+redrawn for 10 episodes per K ∈ {1, 5, 10, 20}; we report mean ± std.
+
+* **Domain alignment.** Embeddings of each room are standardized with that room's *unlabeled*
+  development statistics (per-domain feature normalization), so shared activities learned in S
+  land in the same region in T.
+* **Heads.** `proto`: nearest class prototype by cosine similarity (Snell et al., 2017);
+  `logreg`: class-balanced logistic regression.
+* **Routing.** In deployment the room is unknown: the Task-1 CNN predicts it, and the window is
+  standardized with that room's statistics and classified by that room's head.
+
+**Ablations:** `oracle` (true room), `routed` (predicted room), `no_routing` (one global
+standardization and one head over S's classes + T's exclusive classes), `no_align` (true class
+space but global standardization); representations `ssl`, `random`, `handcrafted`.
+
+**[RESULT]** label-efficiency table/curves (`task3_label_efficiency.png`), routing
+contribution (`task3_routing.png`), confusion matrices and per-class P/R/F1 at K = 5
+(`task3_confusion_K5.png`, `task3_per_class_K5.csv`).
+
+## 8. End-to-End System
+
+`run_episode.py EPISODE_DIR` ingests raw `.pcap`/`.csv` captures, applies the identical
+preprocessing, routes each window by predicted room, embeds it with the SSL encoder and
+classifies it with that room's few-shot head. Labeled support captures may be supplied in
+`EPISODE_DIR/support/<label>/`; otherwise K = 5 development captures per exclusive class are
+used. Output: `window_id, room, label, confidence`. `scripts/make_demo_episode.py` builds and
+scores a rehearsal episode from validation captures with neutral file names.
+
+## 9. Limitations and Required Interpretation
+
+1. **Room vs session confound.** Rooms were recorded in separate sessions; room identification
+   may exploit session effects (gain state, packet rate) as well as geometry. The residual
+   75.7% dynamics-only room accuracy after bandwidth equalization is consistent with this.
+2. **Activity vs location confound** in Experiment 2 (different spatial zones for some
+   activities).
+3. **Asymmetric temporal resolution.** Room-A windows are ≈ 59 real observations upsampled to
+   150; Room-B windows are ≈ 480 downsampled. Room B has no timestamps, so equal physical
+   duration per window cannot be verified.
+4. **Room-A validation has 148 of 150 captures**; two captures contain (almost) no full-band CSI.
+5. Two core environments only; capture-disjoint, not subject-disjoint; original-paper numbers
+   (random 80/20 splits) are not comparable.
+
+## 10. Contribution Statement
+
+**[TEAM]** to be completed by the group members.
+
+## 11. AI-Use Disclosure
+
+This project was developed with the assistance of Claude Code (Anthropic, model Claude Opus 5.5)
+as a coding assistant. It was used to inspect the data, propose and implement the preprocessing
+and modeling code, and draft this report. Design decisions (windowing strategy, defaults for the
+seed-42 split and episode format) were reviewed and chosen by the team. All code was run,
+checked and is explained by the team members; no source-author code was used or shown to the
+assistant. **[TEAM: adjust to the course's disclosure rules.]**
+
+## References
+
+1. Schäfer, J.; Barrsiwal, B.R.; Kokhkharova, M.; Adil, H.; Liebehenschel, J. "Human Activity
+   Recognition Using CSI Information with Nexmon." Applied Sciences 11(19), 8860, 2021.
+2. IEEE DataPort, CSI Human Activity dataset. https://ieee-dataport.org/open-access/csi-human-activity
+3. Gringoli, F.; Schulz, M.; Link, J.; Hollick, M. "Free Your CSI: A Channel State Information
+   Extraction Platform for Modern Wi-Fi Chipsets." WiNTECH 2019 (Nexmon CSI).
+4. Chen, T.; Kornblith, S.; Norouzi, M.; Hinton, G. "A Simple Framework for Contrastive Learning
+   of Visual Representations." ICML 2020.
+5. Snell, J.; Swersky, K.; Zemel, R. "Prototypical Networks for Few-shot Learning." NeurIPS 2017.

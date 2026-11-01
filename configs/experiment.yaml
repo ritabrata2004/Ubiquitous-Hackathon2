@@ -31,5 +31,8 @@ preprocessing:
     # Each capture's valid observation sequence is resampled to `length` steps with a
     # polyphase filter (anti-aliased when downsampling). Same rule for both rooms.
     resample_padtype: line
+    # Common temporal low-pass (cycles per window). Without it, temporal bandwidth alone
+    # identifies the room (a resampling-ratio / packet-count artifact); see README.
+    lowpass_cycles: 20
 
 seed: 42

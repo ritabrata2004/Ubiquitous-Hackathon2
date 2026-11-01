@@ -24,7 +24,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src import cleaning, intermediate, splits, windowing  # noqa: E402
+from src import intermediate, pipeline, splits  # noqa: E402
 
 SPLIT_DIR = {"development": "development", "validation": "local_validation"}
 
@@ -34,26 +34,19 @@ def sha1(path):
 
 
 def process(cap, cfg, force_csv):
-    pre = cfg["preprocessing"]
     out_csv = ROOT / cfg["paths"]["intermediate_csv"] / f"room_{cap['room']}" / f"{cap['capture_id']}.csv"
     stats_file = out_csv.with_suffix(".ingest.json")
     if force_csv or not out_csv.exists():
-        if cap["room"] == "A":
-            amp, ingest = intermediate.room_A_to_amplitude(ROOT / cap["source"], pre["nexmon"])
-        else:
-            amp, ingest = intermediate.room_B_to_amplitude(ROOT / cap["source"])
+        amp, ingest = pipeline.load_amplitude(ROOT / cap["source"], cfg)
         intermediate.write_csv(out_csv, amp)
         stats_file.write_text(json.dumps(ingest))
     ingest = json.loads(stats_file.read_text())
 
     amp = intermediate.read_csv(out_csv)
-    keep, rejects = cleaning.qc_mask(amp, pre["qc"]["min_subband_energy_share"])
-    rec = dict(cap, source_sha1=sha1(ROOT / cap["source"]), n_obs=len(amp),
-               n_valid=int(keep.sum()), **{f"rej_{k}": v for k, v in rejects.items()},
-               **{f"ingest_{k}": v for k, v in ingest.items()})
-    rec["eligible"] = rec["n_valid"] >= pre["qc"]["min_valid_obs"]
-    win = windowing.capture_window(amp[keep], pre["window"]["length"],
-                                   pre["window"]["resample_padtype"]) if rec["eligible"] else None
+    win, n_valid, rejects = pipeline.amplitude_to_window(amp, cfg)
+    rec = dict(cap, source_sha1=sha1(ROOT / cap["source"]), n_obs=len(amp), n_valid=n_valid,
+               **{f"rej_{k}": v for k, v in rejects.items()}, **{f"ingest_{k}": v for k, v in ingest.items()})
+    rec["eligible"] = win is not None
     return rec, win
 
 

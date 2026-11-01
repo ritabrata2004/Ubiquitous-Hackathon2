@@ -68,3 +68,16 @@ def test_windows_and_splits():
 def test_room_B_validation_frozen():
     names = (ROOT / "splits/room_B_validation.txt").read_text().split()
     assert len(names) == len(set(names)) == 125
+
+
+@needs_data
+@pytest.mark.parametrize("room", ["A", "B"])
+def test_episode_path_matches_built_windows(room):
+    """run_episode.py preprocesses raw files directly; it must reproduce the built windows."""
+    import yaml
+    from src import pipeline
+    cfg = yaml.safe_load((ROOT / "configs/experiment.yaml").read_text())
+    r = next(r for r in csv.DictReader(open(INDEX)) if r["room"] == room)
+    amp, _ = pipeline.load_amplitude(ROOT / r["source"], cfg)
+    win, _, _ = pipeline.amplitude_to_window(amp, cfg)
+    np.testing.assert_allclose(win, np.load(ROOT / r["path"]), rtol=1e-4, atol=1e-5)
