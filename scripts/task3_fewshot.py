@@ -15,7 +15,7 @@ Conditions
   no_routing   one global standardization and one head over S's classes + T's exclusive classes
   no_align     oracle class space, but global instead of per-room standardization
 Representations: ssl (Task-2 encoder), random (same architecture), handcrafted.
-Methods: proto, logreg.
+Methods: proto, proto_tkm (transductive prototypes), logreg.
 
 Writes results/task3_fewshot_episodes.csv (per episode), results/task3_fewshot.csv
 (mean/std; experiment, target_room, K, metric, value), per-class tables and confusion
@@ -42,7 +42,8 @@ sys.path.insert(0, str(ROOT))
 from src import data, features, fewshot, models, ssl, train  # noqa: E402
 
 KS = [1, 5, 10, 20]
-PRIMARY = ("ssl", "proto")
+# Primary configuration, chosen on validation (best mean macro-F1 over both directions and all K).
+PRIMARY = ("ssl", "logreg")
 OTHER = {"A": "B", "B": "A"}
 
 
@@ -84,7 +85,9 @@ def run_episode(f, labels, rooms, dev, val, pred_room, k, seed, method):
         """Head for target t: source-room windows of `source_classes` + t's support."""
         src = np.flatnonzero(dev & (rooms == OTHER[t]) & np.isin(labels, source_classes))
         tr = np.concatenate([src, support[t]])
-        return fewshot.fit_predict(method, train_feats[tr], labels[tr], test_feats)
+        return fewshot.fit_predict(method, train_feats[tr], labels[tr], test_feats,
+                                   f_unlab=train_feats[dev & (rooms == t)],
+                                   support=(train_feats[support[t]], labels[support[t]]))
 
     out = {}
     for t in "AB":
@@ -111,6 +114,8 @@ def write_csv(path, rows):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--episodes", type=int, default=10)
+    ap.add_argument("--plot-only", action="store_true",
+                    help="reuse results/task3_fewshot_episodes.csv; rerun only the K=5 primary episode")
     args = ap.parse_args()
     torch.set_num_threads(12)
     out = ROOT / "results"
@@ -125,23 +130,29 @@ def main():
     print("routing accuracy on validation:", (pred_room[val] == rooms[val]).mean())
     reps = representations(x)
 
-    episodes, keep = [], {}
-    for rep, f in reps.items():
-        for method in ("proto", "logreg"):
-            for k in KS:
-                for seed in range(args.episodes):
-                    res = run_episode(f, labels, rooms, dev, val, pred_room, k, seed, method)
-                    for (cond, t), (idx, p, c) in res.items():
-                        if rep != PRIMARY[0] and cond != "oracle":
-                            continue
-                        for metric, v in metrics(labels[idx], p, t).items():
-                            episodes.append({"representation": rep, "method": method, "condition": cond,
-                                             "target_room": t, "K": k, "seed": seed, "metric": metric,
-                                             "value": round(float(v), 4)})
-                        if (rep, method) == PRIMARY and k == 5 and seed == 0:
-                            keep[(cond, t)] = (idx, p, c)
-                print(rep, method, "K", k, "done")
-    write_csv(out / "task3_fewshot_episodes.csv", episodes)
+    if args.plot_only:
+        with open(out / "task3_fewshot_episodes.csv") as fh:
+            episodes = [dict(e, K=int(e["K"]), value=float(e["value"])) for e in csv.DictReader(fh)]
+        res = run_episode(reps[PRIMARY[0]], labels, rooms, dev, val, pred_room, 5, 0, PRIMARY[1])
+        keep = {key: v for key, v in res.items()}
+    else:
+        episodes, keep = [], {}
+        for rep, f in reps.items():
+            for method in ("proto", "proto_tkm", "logreg"):
+                for k in KS:
+                    for seed in range(args.episodes):
+                        res = run_episode(f, labels, rooms, dev, val, pred_room, k, seed, method)
+                        for (cond, t), (idx, p, c) in res.items():
+                            if rep != PRIMARY[0] and cond != "oracle":
+                                continue
+                            for metric, v in metrics(labels[idx], p, t).items():
+                                episodes.append({"representation": rep, "method": method, "condition": cond,
+                                                 "target_room": t, "K": k, "seed": seed, "metric": metric,
+                                                 "value": round(float(v), 4)})
+                            if (rep, method) == PRIMARY and k == 5 and seed == 0:
+                                keep[(cond, t)] = (idx, p, c)
+                    print(rep, method, "K", k, "done")
+        write_csv(out / "task3_fewshot_episodes.csv", episodes)
 
     groups = defaultdict(list)
     for e in episodes:

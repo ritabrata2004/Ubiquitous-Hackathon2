@@ -53,7 +53,7 @@ def main():
     ap.add_argument("episode")
     ap.add_argument("--out", default="predictions.csv")
     ap.add_argument("--k", type=int, default=5, help="fallback support captures per exclusive class")
-    ap.add_argument("--method", default="proto", choices=["proto", "logreg"])
+    ap.add_argument("--method", default="logreg", choices=["proto", "proto_tkm", "logreg"])
     ap.add_argument("--config", default="configs/experiment.yaml")
     args = ap.parse_args()
     cfg = yaml.safe_load((ROOT / args.config).read_text())
@@ -98,7 +98,9 @@ def main():
         else:
             idx = fewshot.support_indices(dev_labels, dev_rooms, all_dev, t, args.k, rng)
             f_sup, y_sup = dev_z[idx], dev_labels[idx]
-        heads[t] = (np.concatenate([dev_z[src], f_sup]), np.concatenate([dev_labels[src], y_sup]))
+        heads[t] = {"f_train": np.concatenate([dev_z[src], f_sup]),
+                    "y_train": np.concatenate([dev_labels[src], y_sup]),
+                    "f_unlab": dev_z[dev_rooms == t], "support": (f_sup, y_sup)}
 
     query_dir = episode / "query" if (episode / "query").exists() else episode
     q_paths = [p for p in captures(query_dir) if support_dir not in p.parents]
@@ -108,7 +110,7 @@ def main():
     for t in "AB":
         m = q_rooms == t
         if m.any():
-            labels[m], conf[m] = fewshot.fit_predict(args.method, *heads[t], q_z[m])
+            labels[m], conf[m] = fewshot.fit_predict(args.method, f_test=q_z[m], **heads[t])
 
     with open(args.out, "w", newline="") as fh:
         w = csv.writer(fh)

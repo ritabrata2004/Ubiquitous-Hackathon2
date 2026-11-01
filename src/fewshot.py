@@ -7,8 +7,10 @@ in the same place in the target room.
 
 Classifiers, trained on: source-room labeled windows of the shared classes + the K target
 support captures of each target-exclusive class (one window per capture).
-  proto   nearest class prototype (cosine), Snell et al. 2017
-  logreg  class-balanced logistic regression
+  proto      nearest class prototype (cosine), Snell et al. 2017
+  proto_tkm  proto refined by spherical k-means on the target room's UNLABELED development
+             windows (transductive adaptation; no target labels beyond the support)
+  logreg     class-balanced logistic regression
 """
 import numpy as np
 from sklearn.linear_model import LogisticRegression
@@ -38,13 +40,35 @@ def support_indices(labels, rooms, dev_mask, target, k, rng):
     return np.array(idx)
 
 
-def fit_predict(method, f_train, y_train, f_test):
-    """Return (predicted labels, confidence)."""
+def unit(v):
+    return v / np.linalg.norm(v, axis=-1, keepdims=True)
+
+
+def refine_prototypes(protos, classes, f_unlab, f_anchor, y_anchor, iters=10):
+    """Transductive refinement: spherical k-means over the target room's UNLABELED development
+    windows, initialized at the prototypes. Labeled target support windows stay assigned to
+    their own class, so exclusive-class prototypes remain anchored."""
+    u = unit(f_unlab)
+    a = unit(f_anchor)
+    for _ in range(iters):
+        assign = (u @ protos.T).argmax(1)
+        new = []
+        for i, c in enumerate(classes):
+            s = u[assign == i].sum(0) + a[y_anchor == c].sum(0)
+            new.append(s if np.any(s) else protos[i])
+        protos = unit(np.stack(new))
+    return protos
+
+
+def fit_predict(method, f_train, y_train, f_test, f_unlab=None, support=None):
+    """Return (predicted labels, confidence).
+    proto_tkm additionally needs f_unlab (target unlabeled dev features) and
+    support = (features, labels) of the target support windows."""
     classes = np.array(sorted(set(y_train)))
-    if method == "proto":
-        def unit(v):
-            return v / np.linalg.norm(v, axis=-1, keepdims=True)
+    if method in ("proto", "proto_tkm"):
         protos = unit(np.stack([f_train[y_train == c].mean(0) for c in classes]))
+        if method == "proto_tkm":
+            protos = refine_prototypes(protos, classes, f_unlab, *support)
         sim = unit(f_test) @ protos.T
         p = np.exp(sim / 0.1)
         p /= p.sum(1, keepdims=True)
