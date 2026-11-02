@@ -81,3 +81,25 @@ def test_episode_path_matches_built_windows(room):
     amp, _ = pipeline.load_amplitude(ROOT / r["source"], cfg)
     win, _, _ = pipeline.amplitude_to_window(amp, cfg)
     np.testing.assert_allclose(win, np.load(ROOT / r["path"]), rtol=1e-4, atol=1e-5)
+
+
+def test_group_prior_matches_expected_shared_share():
+    from src import fewshot
+    rng = np.random.default_rng(0)
+    classes = np.array(["fall", "sit", "sitdown", "stand", "standup", "walk"])
+    p = rng.dirichlet(np.ones(6), 300)
+    p[:, np.isin(classes, ["fall", "sitdown", "standup"])] *= 5  # biased toward exclusive classes
+    p /= p.sum(1, keepdims=True)
+    q = p * fewshot.prior_weights(p, classes, "group")
+    q /= q.sum(1, keepdims=True)
+    shared = np.isin(classes, ["sit", "stand", "walk"])
+    assert abs(q[:, shared].sum(1).mean() - 0.5) < 1e-3
+    # within-group ratios are unchanged
+    np.testing.assert_allclose(q[:, shared] / q[:, shared].sum(1, keepdims=True),
+                               p[:, shared] / p[:, shared].sum(1, keepdims=True), rtol=1e-6)
+
+
+def test_event_features_shape():
+    from src import features
+    f = features.event_features(np.random.default_rng(0).normal(size=(4, 150, 256)).astype(np.float32))
+    assert f.shape == (4, 11) and np.isfinite(f).all()

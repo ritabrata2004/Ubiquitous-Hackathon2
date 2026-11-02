@@ -14,8 +14,14 @@ Conditions
   routed       window routed by the Task-1 room CNN's prediction (deployment setting)
   no_routing   one global standardization and one head over S's classes + T's exclusive classes
   no_align     oracle class space, but global instead of per-room standardization
-Representations: ssl (Task-2 encoder), random (same architecture), handcrafted.
-Methods: proto, proto_tkm (transductive prototypes), logreg.
+Representations: ssl (Task-2 encoder), ssl_event (ssl + 11 event features, src/features.py,
+standardized with pooled instead of per-room statistics), random (same architecture),
+handcrafted.
+Methods: proto, proto_tkm (transductive prototypes), logreg, logreg_gp (logreg + group-level
+prior correction on target unlabeled development windows).
+
+--only REP:METHOD[,REP:METHOD...] runs just those configurations and merges them into the
+existing results/task3_fewshot_episodes.csv (all runs are seeded, so other rows stay valid).
 
 Writes results/task3_fewshot_episodes.csv (per episode), results/task3_fewshot.csv
 (mean/std; experiment, target_room, K, metric, value), per-class tables and confusion
@@ -42,8 +48,12 @@ sys.path.insert(0, str(ROOT))
 from src import data, features, fewshot, models, ssl, train  # noqa: E402
 
 KS = [1, 5, 10, 20]
-# Primary configuration, chosen on validation (best mean macro-F1 over both directions and all K).
-PRIMARY = ("ssl", "logreg")
+# Primary configuration. ssl/logreg was chosen first on validation (best of 9); ssl_event/logreg_gp
+# was then designed from the failure diagnosis and checked on the same validation episodes
+# (scripts/task3_improvements.py). Both selections are reported as validation-based.
+PRIMARY = ("ssl_event", "logreg_gp")
+PREVIOUS = ("ssl", "logreg")
+METHODS = ("proto", "proto_tkm", "logreg", "logreg_gp")
 OTHER = {"A": "B", "B": "A"}
 
 
@@ -52,7 +62,14 @@ def representations(x):
     enc.load_state_dict(torch.load(ROOT / "results/models/ssl_encoder.pt"))
     train.set_seed(0)
     rand = models.Encoder()
-    return {"ssl": ssl.embed(enc, x), "random": ssl.embed(rand, x), "handcrafted": features.handcrafted(x)}
+    emb = ssl.embed(enc, x)
+    return {"ssl": emb, "ssl_event": np.hstack([emb, features.event_features(x)]),
+            "random": ssl.embed(rand, x), "handcrafted": features.handcrafted(x)}
+
+
+def pooled_cols(rep, f):
+    """Columns standardized with pooled (not per-room) statistics: the event features."""
+    return np.arange(models.Encoder().emb, f.shape[1]) if rep == "ssl_event" else None
 
 
 def predicted_rooms(x):
@@ -71,15 +88,16 @@ def metrics(y_true, y_pred, target):
             "balanced_accuracy": balanced_accuracy_score(y_true, y_pred)}
 
 
-def run_episode(f, labels, rooms, dev, val, pred_room, k, seed, method):
+def run_episode(f, labels, rooms, dev, val, pred_room, k, seed, method, pooled=None):
     """Return {(condition, target): (val indices, predictions, confidences)}."""
     rng = np.random.default_rng(seed)
     support = {t: fewshot.support_indices(labels, rooms, dev, t, k, rng) for t in "AB"}
-    per_room = fewshot.standardize(f, rooms, fewshot.domain_stats(f, rooms, dev))
+    stats = fewshot.domain_stats(f, rooms, dev, pooled)
+    per_room = fewshot.standardize(f, rooms, stats)
     glob_stats = {r: (f[dev].mean(0), f[dev].std(0) + 1e-6) for r in "AB"}
     glob = fewshot.standardize(f, rooms, glob_stats)
     # Routed windows are standardized with the stats of the room they are routed to.
-    routed = fewshot.standardize(f, pred_room, fewshot.domain_stats(f, rooms, dev))
+    routed = fewshot.standardize(f, pred_room, stats)
 
     def fit(train_feats, t, source_classes, test_feats):
         """Head for target t: source-room windows of `source_classes` + t's support."""
@@ -116,6 +134,7 @@ def main():
     ap.add_argument("--episodes", type=int, default=10)
     ap.add_argument("--plot-only", action="store_true",
                     help="reuse results/task3_fewshot_episodes.csv; rerun only the K=5 primary episode")
+    ap.add_argument("--only", help="comma-separated REP:METHOD configurations to (re)run and merge")
     args = ap.parse_args()
     torch.set_num_threads(12)
     out = ROOT / "results"
@@ -130,29 +149,34 @@ def main():
     print("routing accuracy on validation:", (pred_room[val] == rooms[val]).mean())
     reps = representations(x)
 
-    if args.plot_only:
-        with open(out / "task3_fewshot_episodes.csv") as fh:
-            episodes = [dict(e, K=int(e["K"]), value=float(e["value"])) for e in csv.DictReader(fh)]
-        res = run_episode(reps[PRIMARY[0]], labels, rooms, dev, val, pred_room, 5, 0, PRIMARY[1])
-        keep = {key: v for key, v in res.items()}
+    episodes_file = out / "task3_fewshot_episodes.csv"
+    if args.plot_only or args.only:
+        with open(episodes_file) as fh:
+            episodes = [dict(e, K=int(e["K"]), seed=int(e["seed"]), value=float(e["value"]))
+                        for e in csv.DictReader(fh)]
     else:
-        episodes, keep = [], {}
-        for rep, f in reps.items():
-            for method in ("proto", "proto_tkm", "logreg"):
-                for k in KS:
-                    for seed in range(args.episodes):
-                        res = run_episode(f, labels, rooms, dev, val, pred_room, k, seed, method)
-                        for (cond, t), (idx, p, c) in res.items():
-                            if rep != PRIMARY[0] and cond != "oracle":
-                                continue
-                            for metric, v in metrics(labels[idx], p, t).items():
-                                episodes.append({"representation": rep, "method": method, "condition": cond,
-                                                 "target_room": t, "K": k, "seed": seed, "metric": metric,
-                                                 "value": round(float(v), 4)})
-                            if (rep, method) == PRIMARY and k == 5 and seed == 0:
-                                keep[(cond, t)] = (idx, p, c)
-                    print(rep, method, "K", k, "done")
-        write_csv(out / "task3_fewshot_episodes.csv", episodes)
+        episodes = []
+    if not args.plot_only:
+        configs = ([tuple(c.split(":")) for c in args.only.split(",")] if args.only
+                   else [(r, m) for r in reps for m in METHODS])
+        episodes = [e for e in episodes if (e["representation"], e["method"]) not in configs]
+        for rep, method in configs:
+            f, pooled = reps[rep], pooled_cols(rep, reps[rep])
+            for k in KS:
+                for seed in range(args.episodes):
+                    res = run_episode(f, labels, rooms, dev, val, pred_room, k, seed, method, pooled)
+                    for (cond, t), (idx, p, c) in res.items():
+                        if rep not in (PRIMARY[0], PREVIOUS[0]) and cond != "oracle":
+                            continue
+                        for metric, v in metrics(labels[idx], p, t).items():
+                            episodes.append({"representation": rep, "method": method, "condition": cond,
+                                             "target_room": t, "K": k, "seed": seed, "metric": metric,
+                                             "value": round(float(v), 4)})
+                print(rep, method, "K", k, "done")
+        write_csv(episodes_file, episodes)
+    # Primary configuration at K=5, episode 0: confusion matrices, per-class table, predictions.
+    keep = run_episode(reps[PRIMARY[0]], labels, rooms, dev, val, pred_room, 5, 0, PRIMARY[1],
+                       pooled_cols(PRIMARY[0], reps[PRIMARY[0]]))
 
     groups = defaultdict(list)
     for e in episodes:
@@ -174,9 +198,9 @@ def main():
                              ("shared_macro_f1", "transferred shared")]:
             m, s = curve(rep, method, "oracle", t, metric)
             ax.errorbar(KS, m, yerr=s, marker="o", capsize=3, label=name)
-        for r in ("random", "handcrafted"):
-            m, _ = curve(r, method, "oracle", t, "macro_f1")
-            ax.plot(KS, m, ls="--", marker=".", label=f"{r} repr., all classes")
+        for r, meth in (PREVIOUS, ("random", "logreg"), ("handcrafted", "logreg")):
+            m, _ = curve(r, meth, "oracle", t, "macro_f1")
+            ax.plot(KS, m, ls="--", marker=".", label=f"{r}/{meth}, all classes")
         ax.set(title=f"{OTHER[t]} -> {t} ({rep}, {method})", xlabel="K (support captures per exclusive class)",
                xscale="log", xticks=KS, xticklabels=KS, ylim=(0, 1))
         ax.grid(alpha=0.3)

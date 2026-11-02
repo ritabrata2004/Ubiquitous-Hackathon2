@@ -34,14 +34,14 @@ observations instead of failing.
 4. **Task 1.** Room is identified perfectly from 10 steps by the static multipath profile.
 5. **Task 2.** SSL encoder: joint probe 0.943 vs 0.911 (random / handcrafted). UMAP: the
    representation is organized by room first — the domain gap.
-6. **Task 3.** Primary: SSL + logistic regression, routed. Macro-F1 at K=1/5/10/20:
-   B→A 0.25/0.40/0.39/0.39, A→B 0.30/0.46/0.54/0.62. Exclusive activities are learned well
-   from K shots (0.68 and 0.86 at K=20).
-   Shared classes fail in two ways: in target A the exclusive classes absorb them (87% of
-   shared errors at K=20); in target B STAND collapses into SIT. Cause: per-room alignment
-   subtracts means over different activity mixes (label shift); room stays 98% predictable
-   from shared windows. INLP, self-training and support crops did not help (negative results).
-   Per-room alignment and routing still give +0.04 to +0.32 macro-F1 (ablation figure).
+6. **Task 3.** Primary: SSL embedding + event features, logistic regression with a group-level
+   prior correction, routed. Macro-F1 at K=1/5/10/20: B→A 0.28/0.40/0.43/0.48,
+   A→B 0.34/0.49/0.56/0.62. Exclusive activities learn well (0.74 and 0.85 at K=20).
+   Story: the first primary failed in two ways — in target A the exclusive classes absorbed the
+   shared ones (87% of shared errors at K=20), in target B STAND collapses into SIT. Cause:
+   per-room alignment over different activity mixes (label shift). INLP, self-training, crops
+   and EM did not help; a group-level prior fixed the target-A shortcut (+0.085 at K=20,
+   bootstrap CI +0.04 to +0.12). The SIT↔STAND confusion remains — the central finding.
 7. **Honest limitations.** Room = session confound; Room-A windows are upsampled; two Room-A
    validation captures unusable (148/150); capture-disjoint, not subject-disjoint.
 

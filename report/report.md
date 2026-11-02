@@ -229,112 +229,137 @@ source of variance shared by the two views of a window. This is the gap Task 3 m
 
 ## 7. Task 3 — Cross-Room Few-Label Adaptation
 
+### 7.1 Setup
+
 For target T with source S, T's head is trained on S's development SIT/STAND/WALK windows plus
 K distinct T development captures per T-exclusive class (A: SITDOWN, STANDUP, FALL;
-B: EMPTY, LYING), and evaluated on **all** T validation windows over T's class space. Support is
-redrawn for 10 episodes per K ∈ {1, 5, 10, 20}; we report mean ± std.
+B: EMPTY, LYING), and evaluated on **all** T validation windows over T's class space
+(148 windows for A, 125 for B). Support is redrawn for 10 episodes per K ∈ {1, 5, 10, 20}; we
+report mean ± std over episodes. T's SIT/STAND/WALK labels and all validation data are never
+used for fitting.
 
-* **Domain alignment.** Embeddings of each room are standardized with that room's *unlabeled*
-  development statistics (per-domain feature normalization), so shared activities learned in S
-  land in the same region in T.
+* **Representation.** Frozen SSL embedding (128-d, Task 2) plus 11 **event features**
+  (`src/features.py`): the per-capture-normalized motion-energy profile (peak ratio, peak
+  position, spread, kurtosis, 7-segment time profile). They describe *transition vs steady
+  state* — FALL, SITDOWN, STANDUP are a burst followed by stillness; SIT, STAND, WALK are steady
+  — and carry less room information than the embedding (development-set room predictability
+  0.90 vs 0.999).
+* **Domain alignment.** Embedding dimensions are standardized with each room's *unlabeled*
+  development statistics (per-domain feature normalization); event features use pooled
+  development statistics.
 * **Heads.** `proto`: nearest class prototype by cosine similarity (Snell et al., 2017);
-  `proto_tkm`: the same prototypes refined transductively by 10 iterations of spherical
-  k-means over the target room's *unlabeled* development windows, with the labeled support
-  windows kept assigned to their class (unsupervised domain adaptation; no target labels
-  beyond the support); `logreg`: class-balanced logistic regression.
+  `proto_tkm`: prototypes refined by 10 iterations of spherical k-means over the target room's
+  unlabeled development windows, support kept anchored; `logreg`: class-balanced logistic
+  regression; **`logreg_gp`**: `logreg` plus a **group-level prior correction** — one weight for
+  the shared classes and one for the exclusive classes, set so that the predicted shared share
+  on the target room's *unlabeled* development windows equals the uniform-class expectation
+  |shared| / C (0.5 for A, 0.6 for B); ratios within each group are unchanged.
 * **Routing.** In deployment the room is unknown: the Task-1 CNN predicts it, and the window is
   standardized with that room's statistics and classified by that room's head.
 
-**Ablations:** `oracle` (true room), `routed` (predicted room), `no_routing` (one global
-standardization and one head over S's classes + T's exclusive classes), `no_align` (true class
-space but global standardization); representations `ssl`, `random`, `handcrafted`.
+**Primary configuration and how it was chosen.** `ssl_event / logreg_gp`, routed. We first
+selected `ssl / logreg` as the best of 9 representation/head pairs on validation (§7.3), then
+diagnosed its failure modes and tested targeted fixes on the same validation episodes (§7.6);
+the group prior was designed after seeing the first prior-correction results. Both steps are
+selection on validation; the numbers below are validation results and likely somewhat
+optimistic.
 
-**Primary configuration.** SSL embeddings + `logreg` head, routed by the predicted room. It
-was selected **on validation** as the best mean macro-F1 over both directions and all K
-(alternatives reported below). Mean ± std over 10 support episodes; validation windows:
-148 (target A), 125 (target B).
+### 7.2 Results
 
 **B → A (target A; exclusive: SITDOWN, STANDUP, FALL)**
 
 | metric | K=1 | K=5 | K=10 | K=20 |
 |---|---|---|---|---|
-| **macro-F1 (all target classes)** | 0.252 ± 0.03 | 0.398 ± 0.03 | 0.393 ± 0.03 | 0.392 ± 0.03 |
-| target-exclusive macro-F1 | 0.361 ± 0.06 | 0.596 ± 0.04 | 0.633 ± 0.04 | 0.677 ± 0.03 |
-| shared SIT/STAND/WALK macro-F1 | 0.143 ± 0.02 | 0.199 ± 0.04 | 0.153 ± 0.05 | 0.107 ± 0.05 |
-| balanced accuracy | 0.250 ± 0.03 | 0.437 ± 0.04 | 0.471 ± 0.02 | 0.494 ± 0.02 |
+| **macro-F1 (all target classes)** | 0.280 ± 0.04 | 0.399 ± 0.03 | 0.431 ± 0.04 | 0.477 ± 0.02 |
+| target-exclusive macro-F1 | 0.393 ± 0.07 | 0.600 ± 0.04 | 0.668 ± 0.07 | 0.741 ± 0.02 |
+| shared SIT/STAND/WALK macro-F1 | 0.166 ± 0.03 | 0.197 ± 0.03 | 0.193 ± 0.02 | 0.213 ± 0.02 |
+| balanced accuracy | 0.288 ± 0.04 | 0.405 ± 0.03 | 0.435 ± 0.04 | 0.479 ± 0.02 |
 
 **A → B (target B; exclusive: EMPTY, LYING)**
 
 | metric | K=1 | K=5 | K=10 | K=20 |
 |---|---|---|---|---|
-| **macro-F1 (all target classes)** | 0.296 ± 0.04 | 0.462 ± 0.05 | 0.542 ± 0.05 | 0.616 ± 0.02 |
-| target-exclusive macro-F1 | 0.264 ± 0.12 | 0.624 ± 0.08 | 0.784 ± 0.05 | 0.858 ± 0.04 |
-| shared SIT/STAND/WALK macro-F1 | 0.318 ± 0.03 | 0.353 ± 0.06 | 0.381 ± 0.06 | 0.454 ± 0.02 |
-| balanced accuracy | 0.303 ± 0.03 | 0.454 ± 0.05 | 0.542 ± 0.06 | 0.641 ± 0.03 |
+| **macro-F1 (all target classes)** | 0.344 ± 0.06 | 0.486 ± 0.05 | 0.562 ± 0.03 | 0.617 ± 0.02 |
+| target-exclusive macro-F1 | 0.385 ± 0.07 | 0.631 ± 0.08 | 0.783 ± 0.05 | 0.851 ± 0.03 |
+| shared SIT/STAND/WALK macro-F1 | 0.316 ± 0.06 | 0.389 ± 0.04 | 0.415 ± 0.04 | 0.461 ± 0.03 |
+| balanced accuracy | 0.346 ± 0.06 | 0.498 ± 0.05 | 0.570 ± 0.04 | 0.626 ± 0.02 |
+
+The ± values reflect support sampling only. With ~25 validation windows per class, test-set
+noise on a single macro-F1 is about ±0.08; differences *between* configurations are assessed
+with a paired bootstrap over validation windows (§7.6).
 
 **Label efficiency** (Fig. `task3_label_efficiency.png`). Target-exclusive activities are
-learned efficiently: macro-F1 rises from 0.36 → 0.68 (A) and 0.26 → 0.86 (B) as K goes from
-1 to 20, with most of the gain by K = 5–10. Transferred shared activities are the bottleneck:
-in A → B they improve slowly with K (0.32 → 0.45), while in B → A they stay at 0.11–0.20,
-at or below chance level, and *decrease* as more exclusive support is added (the
-growing exclusive classes absorb shared-class windows). With one shot, every configuration is
-close to chance.
+learned efficiently: macro-F1 rises from 0.39 → 0.74 (A) and 0.39 → 0.85 (B) as K goes from
+1 to 20, most of it by K = 5–10. Transferred shared activities remain the bottleneck: they
+improve slowly in A → B (0.32 → 0.46) and stay at 0.17–0.21 in B → A. With one shot every
+configuration is close to chance (0.17 for 6 classes, 0.20 for 5).
 
-**Representation and head** (oracle routing, macro-F1):
+### 7.3 Representation and head
+
+Oracle routing, macro-F1, mean of 10 episodes:
 
 | representation / head | B→A K=5 | B→A K=20 | A→B K=5 | A→B K=20 |
 |---|---|---|---|---|
 | ssl / proto | 0.359 | 0.369 | 0.347 | 0.429 |
 | ssl / proto_tkm | 0.313 | 0.301 | 0.394 | 0.464 |
-| **ssl / logreg** | **0.398** | 0.392 | **0.462** | **0.616** |
+| ssl / logreg (previous primary) | 0.398 | 0.392 | 0.462 | 0.616 |
+| ssl / logreg_gp | 0.410 | 0.457 | 0.465 | 0.605 |
+| ssl_event / logreg | 0.398 | 0.425 | 0.488 | 0.605 |
+| **ssl_event / logreg_gp (primary)** | 0.399 | **0.477** | 0.486 | **0.617** |
 | random / proto | 0.303 | 0.273 | 0.387 | 0.463 |
 | random / proto_tkm | 0.316 | 0.321 | 0.406 | 0.464 |
 | random / logreg | 0.360 | 0.371 | 0.442 | 0.483 |
 | handcrafted / proto | 0.392 | 0.383 | 0.415 | 0.468 |
-| handcrafted / proto_tkm | 0.438 | **0.455** | 0.375 | 0.544 |
+| handcrafted / proto_tkm | 0.438 | 0.455 | 0.375 | 0.544 |
 | handcrafted / logreg | 0.394 | 0.408 | 0.455 | 0.541 |
 
 With the `logreg` head, self-supervised pretraining contributes +0.02 to +0.04 (B→A) and
-+0.02 to +0.13 (A→B) macro-F1 over the same architecture with random weights. In the hard B → A direction the
-handcrafted features with transductive prototypes are the best single configuration
-(0.455 at K = 20); transductive refinement helps handcrafted features but not SSL embeddings.
++0.02 to +0.13 (A→B) macro-F1 over the same architecture with random weights. The group prior
+mainly helps B → A at larger K; the event features help both directions slightly; together
+they give the best mean over both directions and all K (0.450 vs 0.419 for the previous
+primary). `handcrafted / proto_tkm` is competitive in B → A but not in A → B; we report it as
+an observation and do not pick per direction.
 
-**Routing contribution** (Fig. `task3_routing.png`; ssl / logreg; macro-F1, shared-class
-macro-F1 in parentheses):
+### 7.4 Routing contribution
+
+Fig. `task3_routing.png`; primary configuration; macro-F1 (shared-class macro-F1):
 
 | condition | B→A K=5 | B→A K=20 | A→B K=5 | A→B K=20 |
 |---|---|---|---|---|
-| oracle room | 0.398 (0.20) | 0.392 (0.11) | 0.462 (0.35) | 0.616 (0.45) |
-| **predicted room (routed)** | 0.398 (0.20) | 0.392 (0.11) | 0.462 (0.35) | 0.616 (0.45) |
-| no routing | 0.324 (0.10) | 0.353 (0.05) | 0.357 (0.20) | 0.299 (0.08) |
-| no per-room alignment | 0.330 (0.12) | 0.351 (0.05) | 0.364 (0.23) | 0.339 (0.15) |
+| oracle room | 0.399 (0.20) | 0.477 (0.21) | 0.486 (0.39) | 0.617 (0.46) |
+| **predicted room (routed)** | 0.399 (0.20) | 0.477 (0.21) | 0.486 (0.39) | 0.617 (0.46) |
+| no routing | 0.410 (0.25) | 0.443 (0.22) | 0.369 (0.22) | 0.467 (0.24) |
+| no per-room alignment | 0.400 (0.24) | 0.433 (0.23) | 0.419 (0.29) | 0.498 (0.31) |
 
-Because the Task-1 room classifier is 100% accurate on validation, predicted-room routing is
-identical to oracle routing. Routing adds +0.04 to +0.07 macro-F1 in B → A and +0.10 to +0.32
-in A → B over the same model without routing; nearly all of it comes from per-room feature
-alignment (the no-alignment ablation performs like no routing), and it is concentrated in the
-shared classes, which collapse to 0.05–0.23 F1 without it.
+The Task-1 room classifier is 100% accurate on validation, so predicted-room routing equals
+oracle routing. Routing contributes clearly in A → B (+0.12 to +0.15 macro-F1 over no
+routing), mostly through per-room alignment of the shared classes. In B → A its contribution is
+small (−0.01 at K = 5, +0.03 at K = 20): once the group prior removes the shortcut (§7.6), the
+per-room alignment that routing provides matters less there. For the previous primary
+(`ssl / logreg`), routing added +0.04 to +0.07 (B→A) and +0.10 to +0.32 (A→B).
 
-**Per-class results at K = 5** (episode 0, routed; `task3_per_class_K5.csv`,
-Fig. `task3_confusion_K5.png`):
+### 7.5 Per-class results at K = 5
+
+Episode 0, routed (`task3_per_class_K5.csv`, Fig. `task3_confusion_K5.png`):
 
 | target | activity | precision | recall | F1 |
 |---|---|---|---|---|
-| A | sit | 0.000 | 0.000 | 0.000 |
-| A | stand | 0.360 | 0.375 | 0.367 |
-| A | walk | 0.500 | 0.160 | 0.242 |
-| A | fall | 0.550 | 0.880 | 0.677 |
-| A | sitdown | 0.457 | 0.640 | 0.533 |
-| A | standup | 0.474 | 0.720 | 0.571 |
-| B | sit | 0.154 | 0.240 | 0.188 |
+| A | sit | 0.100 | 0.042 | 0.059 |
+| A | stand | 0.180 | 0.375 | 0.243 |
+| A | walk | 0.500 | 0.200 | 0.286 |
+| A | fall | 0.553 | 0.840 | 0.667 |
+| A | sitdown | 0.750 | 0.600 | 0.667 |
+| A | standup | 0.600 | 0.480 | 0.533 |
+| B | sit | 0.318 | 0.560 | 0.406 |
 | B | stand | 0.000 | 0.000 | 0.000 |
-| B | walk | 0.531 | 0.680 | 0.597 |
-| B | empty | 0.588 | 0.400 | 0.476 |
-| B | lying | 0.647 | 0.440 | 0.524 |
+| B | walk | 0.552 | 0.640 | 0.593 |
+| B | empty | 0.524 | 0.440 | 0.478 |
+| B | lying | 0.545 | 0.480 | 0.511 |
 
-**Diagnosis: two different failure modes.** Pooling the shared-class errors of the primary
-configuration over the 10 episodes (no new model selection) shows that the two directions fail
-differently:
+### 7.6 Failure analysis and targeted fixes
+
+**Diagnosis of the previous primary (`ssl / logreg`).** Pooling its shared-class errors over
+the 10 episodes (no new model selection) shows that the two directions fail differently:
 
 | | B→A K=5 | B→A K=20 | A→B K=5 | A→B K=20 |
 |---|---|---|---|---|
@@ -342,46 +367,81 @@ differently:
 | shared-class errors that are **SIT ↔ STAND** | 19% | 7% | **63%** | **55%** |
 | recall SIT / STAND / WALK | 0.02 / 0.38 / 0.16 | 0.00 / 0.19 / 0.04 | 0.45 / 0.11 / 0.67 | 0.71 / 0.11 / 0.63 |
 
-* **Target A — exclusive classes absorb the shared ones.** True SIT is predicted SITDOWN
-  (55%) and true WALK is predicted SITDOWN (66%) at K = 20, and it worsens as K grows.
+* **Target A — exclusive classes absorb the shared ones** (a room shortcut). True SIT is
+  predicted SITDOWN (55%) and true WALK is predicted SITDOWN (66%) at K = 20; it worsens as K
+  grows.
 * **Target B — STAND collapses into SIT.** True STAND is predicted SIT 60% of the time, while
   SIT itself reaches 0.71 recall at K = 20; WALK transfers (0.63).
 
 **Mechanism: label shift in the per-room alignment.** After per-room standardization the room
 is no longer linearly predictable from all development windows (5-fold accuracy 0.36), but it
-*is* predictable from the shared-class windows alone (0.984). Each room's mean is taken over a
-different activity mix (falls and transitions in A, empty and lying in B), so subtracting it
-shifts the shared classes to different places in the two rooms. In the head, all shared-class
-training windows come from the source room and all exclusive ones from the target room, so
-the residual room offset is learned as evidence for the exclusive classes. Within a room the
-shared classes are easy (Task-2 per-room probes 0.93–0.98), and a model that sees only the
-static multipath profile transfers SIT/STAND/WALK at or below chance (shared F1 0.06–0.31 in a
-5-episode check), so static postures are encoded mainly as a room-specific change of the
-multipath pattern (cf. limitation 2).
+*is* predictable from the shared-class windows alone (0.984; the room-predictive subspace has
+about 14 directions, which can only be found with both rooms' shared labels). Each room's mean
+is taken over a different activity mix (falls and transitions in A, empty and lying in B), so
+subtracting it shifts the shared classes to different places in the two rooms. In the head,
+all shared-class training windows come from the source room and all exclusive ones from the
+target room, so the residual offset is learned as evidence for the exclusive classes. Within a
+room the shared classes are easy (Task-2 per-room probes 0.93–0.98), and a model that sees only
+the static multipath profile transfers SIT/STAND/WALK at or below chance (shared F1 0.06–0.31
+in a 5-episode check): static postures are encoded mainly as a room-specific change of the
+multipath pattern (cf. limitation 2), which no label-free alignment can undo.
 
-**Targeted fixes (all negative).** Chosen from the diagnosis before running, not tuned on
-validation; same 10 episodes (`scripts/task3_improvements.py`, `results/task3_improvements.csv`):
+**Fixes evaluated** (`scripts/task3_improvements.py`, `results/task3_improvements.csv`; same 10
+episodes; macro-F1, plus the shortcut rate in A and the SIT↔STAND rate in B at K = 20):
 
-| variant | B→A K=5 | B→A K=20 | A→B K=5 | A→B K=20 | effect on the diagnosed failure |
-|---|---|---|---|---|---|
-| primary (ssl / logreg) | 0.397 | 0.392 | 0.462 | 0.616 | shortcut 0.80 (A, K=20); SIT↔STAND 0.43 (B, K=20) |
-| + 4 crops per support capture | 0.395 | 0.395 | 0.459 | 0.616 | none: crops embed almost identically under global pooling |
-| + INLP on room (Ravfogel et al., 2020) | 0.397 | 0.392 | 0.462 | 0.616 | no-op: 0 directions removed (room not linearly predictable after alignment) |
-| + INLP on head groups (source vs support) | 0.397 | 0.392 | 0.438 | 0.508 | harmful: the groups coincide with shared vs exclusive activities |
-| + self-training (p ≥ 0.9, 3 rounds) | 0.367 | 0.367 | 0.452 | 0.600 | harmful: shortcut 0.87 (A); SIT↔STAND 0.52 (B) |
+| variant | B→A K=5 | B→A K=20 | A→B K=5 | A→B K=20 | A shortcut | B SIT↔STAND |
+|---|---|---|---|---|---|---|
+| previous primary (ssl / logreg) | 0.397 | 0.392 | 0.462 | 0.616 | 0.80 | 0.43 |
+| *Round 1 (chosen before running)* | | | | | | |
+| + 4 crops per support capture | 0.395 | 0.395 | 0.459 | 0.616 | 0.80 | 0.42 |
+| + INLP on room (Ravfogel et al., 2020) | 0.397 | 0.392 | 0.462 | 0.616 | 0.80 | 0.43 |
+| + INLP on head groups (source vs support) | 0.397 | 0.392 | 0.438 | 0.508 | 0.83 | 0.60 |
+| + self-training (p ≥ 0.9, 3 rounds) | 0.367 | 0.367 | 0.452 | 0.600 | 0.87 | 0.52 |
+| *Round 2 (prior correction, event features)* | | | | | | |
+| + EM prior re-estimation (Saerens et al., 2002) | 0.357 | 0.344 | 0.485 | 0.593 | 0.94 | 0.37 |
+| + per-class balanced prior | 0.427 | 0.485 | 0.413 | 0.517 | 0.27 | 0.71 |
+| + group prior | 0.410 | 0.457 | 0.465 | 0.605 | 0.26 | 0.43 |
+| + event features | 0.398 | 0.425 | 0.488 | 0.605 | 0.70 | 0.42 |
+| + event features + balanced prior | 0.420 | 0.504 | 0.426 | 0.547 | 0.21 | 0.69 |
+| **+ event features + group prior (primary)** | 0.399 | 0.477 | 0.486 | 0.617 | **0.20** | 0.44 |
 
-Self-training confirms the model's own errors, and distribution-matching alignment cannot
-correct a class-dependent offset it cannot see without target shared labels. Fixing these
-failure modes would need label-shift-aware alignment (estimating the target class mix) or a
-source-supervised, domain-adversarial encoder (Ganin et al., 2016); we leave both as future
-work. Dynamic activities (WALK, FALL, transitions) remain the most transferable.
+* Support crops embed almost identically under global temporal pooling; INLP on room removes 0
+  directions (room is not linearly predictable after alignment); INLP on head groups removes
+  activity information because the groups coincide with shared vs exclusive classes;
+  self-training confirms the model's own errors.
+* **EM re-estimation reinforces the shortcut** (0.80 → 0.94): it assumes an unbiased
+  classifier, which is exactly what fails here.
+* **A per-class balanced prior fixes target A but harms target B** (−0.10 at K = 20): forcing
+  STAND to its share pushes true SIT windows into STAND (SIT↔STAND 0.43 → 0.71).
+* **The group prior targets only the diagnosed group-level shortcut.** It cuts the shortcut in
+  A from 0.80 to 0.20–0.26 and leaves the within-shared split, and target B, essentially
+  unchanged. The event-feature + balanced-prior variant scores higher on A but lower on B and on
+  the mean over both directions, so it was not chosen.
+
+**Paired bootstrap** (500 resamples of the validation windows, episodes averaged;
+`results/task3_bootstrap.csv`), primary vs previous primary, macro-F1 difference [95% CI]:
+
+| | K=1 | K=5 | K=10 | K=20 |
+|---|---|---|---|---|
+| B → A | +0.027 [+0.008, +0.049] | +0.001 [−0.019, +0.022] | +0.038 [+0.003, +0.071] | **+0.085 [+0.041, +0.123]** |
+| A → B | +0.047 [−0.008, +0.097] | +0.024 [−0.008, +0.058] | +0.020 [−0.013, +0.057] | +0.001 [−0.034, +0.042] |
+
+The improvement in B → A at K = 10–20 is clearly outside test-set noise; in A → B the change is
+within noise and never significantly negative. The bootstrap does not account for the
+selection among variants, so the true gain is probably somewhat smaller.
+
+**What remains unsolved.** The SIT↔STAND confusion (about 0.44 in A → B) is unaffected by any
+label-free method we tried and is the central finding of Task 3: posture is carried by the
+same static channel component as the room fingerprint. Label-shift-aware alignment of the
+encoder or a source-supervised, domain-adversarial encoder (Ganin et al., 2016) are natural
+next steps; dynamic activities (WALK, FALL, transitions) remain the most transferable.
 
 ## 8. End-to-End System
 
 `run_episode.py EPISODE_DIR` ingests raw `.pcap`/`.csv` captures, applies the identical
 preprocessing, routes each window by predicted room, embeds it with the SSL encoder and
-classifies it with that room's few-shot head (default: the primary `logreg` head; `--method`
-selects `proto` or `proto_tkm`). Labeled support captures may be supplied in
+classifies it with that room's few-shot head (default: the primary SSL + event features with
+`logreg_gp`; `--method` selects `proto`, `proto_tkm` or `logreg`). Labeled support captures may be supplied in
 `EPISODE_DIR/support/<label>/`; otherwise K = 5 development captures per exclusive class are
 used. On a 33-capture rehearsal episode built from validation captures, all rooms were
 predicted correctly and activity results were in line with the validation tables. Output: `window_id, room, label, confidence`. `scripts/make_demo_episode.py` builds and
@@ -427,3 +487,5 @@ assistant. **[TEAM: adjust to the course's disclosure rules.]**
 6. Ravfogel, S.; Elazar, Y.; Gonen, H.; Twiton, M.; Goldberg, Y. "Null It Out: Guarding Protected
    Attributes by Iterative Nullspace Projection." ACL 2020.
 7. Ganin, Y. et al. "Domain-Adversarial Training of Neural Networks." JMLR 17, 2016.
+8. Saerens, M.; Latinne, P.; Decaestecker, C. "Adjusting the Outputs of a Classifier to New a
+   Priori Probabilities: A Simple Procedure." Neural Computation 14(1), 2002.

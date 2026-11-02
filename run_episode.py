@@ -1,15 +1,16 @@
 """End-to-end inference on a challenge episode: raw captures -> predictions.
 
 Usage:
-  python run_episode.py EPISODE_DIR [--out predictions.csv] [--k 5] [--method proto]
+  python run_episode.py EPISODE_DIR [--out predictions.csv] [--k 5] [--method logreg_gp]
 
 EPISODE_DIR layout (captures may be Nexmon .pcap or 256-column amplitude .csv):
   EPISODE_DIR/query/**/*.{pcap,csv}          captures to predict (or directly in EPISODE_DIR)
   EPISODE_DIR/support/<label>/*.{pcap,csv}   optional labeled target-room support captures
 
 Steps per capture: ingest -> QC -> (150, 256) window -> normalization (development stats)
--> room CNN (Task 1) routes the window -> SSL encoder (Task 2) -> the routed room's
-standardization -> that room's few-shot head (Task 3).
+-> room CNN (Task 1) routes the window -> SSL encoder (Task 2) + event features -> the
+routed room's standardization -> that room's few-shot head (Task 3; default logreg_gp, whose
+group prior is estimated on that room's unlabeled development windows).
 Each room's head is trained on the other room's development SIT/STAND/WALK windows plus
 target support: the episode's support windows routed to that room, or, if the episode has
 none, K development captures per target-exclusive class (seed 0).
@@ -29,7 +30,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from src import data, fewshot, models, normalization, pipeline, ssl, train, windowing  # noqa: E402
+from src import data, features, fewshot, models, normalization, pipeline, ssl, train, windowing  # noqa: E402
 
 OTHER = {"A": "B", "B": "A"}
 
@@ -53,7 +54,7 @@ def main():
     ap.add_argument("episode")
     ap.add_argument("--out", default="predictions.csv")
     ap.add_argument("--k", type=int, default=5, help="fallback support captures per exclusive class")
-    ap.add_argument("--method", default="logreg", choices=["proto", "proto_tkm", "logreg"])
+    ap.add_argument("--method", default="logreg_gp", choices=["proto", "proto_tkm", "logreg", "logreg_gp"])
     ap.add_argument("--config", default="configs/experiment.yaml")
     args = ap.parse_args()
     cfg = yaml.safe_load((ROOT / args.config).read_text())
@@ -71,13 +72,17 @@ def main():
     encoder = models.Encoder()
     encoder.load_state_dict(torch.load(ROOT / "results/models/ssl_encoder.pt"))
 
+    def represent(x):  # the primary Task-3 representation: SSL embedding + event features
+        return np.hstack([ssl.embed(encoder, x), features.event_features(x)])
+
     def prepare(paths):
         x = normalization.apply(np.stack([to_window(p, cfg) for p in paths]), stats)
         proba = train.predict_proba(room_clf, x)
-        return x, np.array(["A", "B"])[proba.argmax(1)], ssl.embed(encoder, x)
+        return x, np.array(["A", "B"])[proba.argmax(1)], represent(x)
 
-    dev_f = ssl.embed(encoder, dev_x)
-    dom = fewshot.domain_stats(dev_f, dev_rooms, np.ones(len(dev_f), bool))
+    dev_f = represent(dev_x)
+    dom = fewshot.domain_stats(dev_f, dev_rooms, np.ones(len(dev_f), bool),
+                               pooled_cols=np.arange(encoder.emb, dev_f.shape[1]))
     dev_z = fewshot.standardize(dev_f, dev_rooms, dom)
 
     support_dir = episode / "support"

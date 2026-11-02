@@ -11,9 +11,12 @@ support captures of each target-exclusive class (one window per capture).
   proto_tkm  proto refined by spherical k-means on the target room's UNLABELED development
              windows (transductive adaptation; no target labels beyond the support)
   logreg     class-balanced logistic regression
+  logreg_gp  logreg + group-level prior correction on the target room's UNLABELED development
+             windows (prior_weights "group"); the primary head
 
 Extensions evaluated in scripts/task3_improvements.py: removal of room-predictive directions
-(nullspace_projection) and self-training on unlabeled target windows (self_train_logreg).
+(nullspace_projection), self-training on unlabeled target windows (self_train_logreg) and
+other prior corrections (prior_weights "em", "balanced").
 """
 import numpy as np
 from sklearn.linear_model import LogisticRegression
@@ -21,9 +24,16 @@ from sklearn.linear_model import LogisticRegression
 from .data import EXCLUSIVE, SHARED
 
 
-def domain_stats(feats, rooms, dev_mask):
-    return {r: (feats[dev_mask & (rooms == r)].mean(0), feats[dev_mask & (rooms == r)].std(0) + 1e-6)
-            for r in np.unique(rooms)}
+def domain_stats(feats, rooms, dev_mask, pooled_cols=None):
+    """Per-room mean/std from development windows. Columns in `pooled_cols` (features designed
+    to be room-independent, e.g. event features) use the pooled development statistics."""
+    stats = {r: (feats[dev_mask & (rooms == r)].mean(0), feats[dev_mask & (rooms == r)].std(0) + 1e-6)
+             for r in np.unique(rooms)}
+    if pooled_cols is not None:
+        mu, sd = feats[dev_mask].mean(0), feats[dev_mask].std(0) + 1e-6
+        for r_mu, r_sd in stats.values():
+            r_mu[pooled_cols], r_sd[pooled_cols] = mu[pooled_cols], sd[pooled_cols]
+    return stats
 
 
 def standardize(feats, rooms, stats):
@@ -100,11 +110,42 @@ def self_train_logreg(f_train, y_train, f_test, f_unlab, threshold=0.9, rounds=3
     return clf.classes_[p.argmax(1)], p.max(1)
 
 
+def prior_weights(p_unlab, classes, mode, iters=100):
+    """Class weights that re-scale a class-balanced head's probabilities, estimated on the
+    target room's UNLABELED development windows (no labels used):
+      em        Saerens et al. 2002: EM re-estimate of the target class priors
+      balanced  per-class weights so predicted class proportions are uniform
+      group     one weight for the shared group and one for the exclusive group so their
+                predicted share matches the uniform-class expectation |shared| / C; the split
+                within each group is untouched. Targets the shared->exclusive shortcut.
+    """
+    C = len(classes)
+    w = np.ones(C)
+    shared = np.isin(classes, SHARED)
+    for _ in range(iters):
+        q = p_unlab * w
+        q /= q.sum(1, keepdims=True)
+        if mode == "em":
+            w = q.mean(0) * C
+        elif mode == "balanced":
+            w *= (1 / C) / q.mean(0)
+        else:
+            share, target = q[:, shared].sum(1).mean(), shared.sum() / C
+            w[shared] *= target / share
+            w[~shared] *= (1 - target) / (1 - share)
+    return w
+
+
 def fit_predict(method, f_train, y_train, f_test, f_unlab=None, support=None):
     """Return (predicted labels, confidence).
     proto_tkm additionally needs f_unlab (target unlabeled dev features) and
-    support = (features, labels) of the target support windows."""
+    support = (features, labels) of the target support windows; logreg_gp needs f_unlab."""
     classes = np.array(sorted(set(y_train)))
+    if method == "logreg_gp":
+        clf = LogisticRegression(C=0.5, max_iter=5000, class_weight="balanced").fit(f_train, y_train)
+        p = clf.predict_proba(f_test) * prior_weights(clf.predict_proba(f_unlab), clf.classes_, "group")
+        p /= p.sum(1, keepdims=True)
+        return clf.classes_[p.argmax(1)], p.max(1)
     if method in ("proto", "proto_tkm"):
         protos = unit(np.stack([f_train[y_train == c].mean(0) for c in classes]))
         if method == "proto_tkm":
